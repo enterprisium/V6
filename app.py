@@ -1,21 +1,25 @@
+import re
 import os
 import io
 import json
 import uuid
+import torch
 import random
 import requests
 import numpy as np
 import gradio as gr
 from PIL import Image
+from TTS.api import TTS
 from pprint import pprint
+from hercai import Hercai
 from elevenlabs import play
 from g4f.client import Client
 import google.generativeai as genai
 from faster_whisper import WhisperModel
 from elevenlabs.client import ElevenLabs
 from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip, AudioFileClip, concatenate_videoclips, ImageClip
-from TTS.api import TTS
-import torch
+
+
 
 # Define default values
 TOPIC = "Success and Achievement"
@@ -29,8 +33,9 @@ FONT_SIZE = 80
 FONT_NAME = "Nimbus-Sans-Bold"
 POSITION = "center"
 ELEVENLABS_VOICE = "Adam"
-TTS_ENGINE = "ElevenLabs"  # Default TTS engine
-XTTS_VOICE = "Ana Florence"  # Default XTTS voice
+TTS_ENGINE = "ElevenLabs"
+XTTS_VOICE = "Ana Florence"
+
 
 # Global variables for API keys
 segmind_apikey = ""
@@ -161,17 +166,17 @@ def generate_and_save_audio(text, active_folder, output_filename, tts_engine, el
 def create_combined_video_audio(active_folder, output_filename):
     image_files = sorted([f for f in os.listdir(active_folder) if f.endswith('.jpg')])
     audio_files = sorted([f for f in os.listdir(active_folder) if f.endswith('.mp3')])
-    
+
     clips = []
     for img, aud in zip(image_files, audio_files):
         img_path = os.path.join(active_folder, img)
         aud_path = os.path.join(active_folder, aud)
-        
+
         image_clip = ImageClip(img_path).set_duration(AudioFileClip(aud_path).duration)
         audio_clip = AudioFileClip(aud_path)
         video_clip = image_clip.set_audio(audio_clip)
         clips.append(video_clip)
-    
+
     final_clip = concatenate_videoclips(clips)
     output_path = os.path.join(active_folder, output_filename)
     final_clip.write_videofile(output_path, codec="libx264", audio_codec="aac")
@@ -274,12 +279,11 @@ def save_api_keys(segmind_key, elevenlabs_key, gemini_key):
     elevenlabs_apikey = elevenlabs_key
     gemini_apikey = gemini_key
     return "API keys saved successfully!"
-
 # Gradio UI
 with gr.Blocks(theme=gr.themes.Base()) as demo:
     gr.Markdown("# SocialGPT - Generate Short-form Videos")
 
-    with gr.Accordion("API Keys", open=False):
+    with gr.Box(visible=False):
         with gr.Row():
             segmind_key_input = gr.Textbox(label="Segmind API Key", type="password")
             elevenlabs_key_input = gr.Textbox(label="ElevenLabs API Key", type="password")
@@ -288,36 +292,34 @@ with gr.Blocks(theme=gr.themes.Base()) as demo:
             save_keys_btn = gr.Button("Save API Keys")
             status_output = gr.Textbox(label="Status", interactive=False)
 
+    with gr.Accordion("Script Settings", open=True):
+        with gr.Row():
+            topic = gr.Textbox(label="Video Topic", value=TOPIC)
+            goal = gr.Textbox(label="Video Goal", value=GOAL)
+            llm = gr.Dropdown(["G4F", "Gemini"], label="Language Model", value=LLM)
+
+    with gr.Accordion("Video Settings", open=False):
+        with gr.Row():
+            image_gen = gr.Dropdown(["Hercai", "Segmind"], label="Image Generation Model", value=IMAGE_GEN)
+            hercai_model = gr.Dropdown(["v1", "v2", "v3", "lexica", "prodia"], label="Hercai Model", value=HERCAI_MODEL, visible=False)
+            video_dimensions = gr.Dropdown(["1080x1920", "1920x1080"], label="Video Dimensions", value=VIDEO_DIMENSIONS)
+
+    with gr.Accordion("Audio Settings", open=False):
+        with gr.Row():
+            tts_engine = gr.Dropdown(["ElevenLabs", "XTTS_V2"], label="TTS Engine", value=TTS_ENGINE)
+            elevenlabs_voice = gr.Dropdown(AVAILABLE_VOICES, label="ElevenLabs Voice", value=ELEVENLABS_VOICE)
+            xtts_voice = gr.Dropdown(XTTS_VOICES, label="XTTS Voice", value=XTTS_VOICE, visible=False)
+
+    with gr.Accordion("Subtitles Settings", open=False):
+        with gr.Row():
+            font_color = gr.ColorPicker(label="Font Color", value=FONT_COLOR)
+            font_size = gr.Number(label="Font Size", value=FONT_SIZE)
+        with gr.Row():
+            font_name = gr.Dropdown(["Nimbus-Sans-Bold", "Arial", "Helvetica", "Times New Roman"], label="Font Name", value=FONT_NAME)
+            text_position = gr.Dropdown(["center", "top", "bottom"], label="Text Position", value=POSITION)
+
     with gr.Row():
-        # First column
-        with gr.Column(scale=1, min_width=300):
-            with gr.Box():
-                gr.Markdown("### Script Settings")
-                topic = gr.Textbox(label="Video Topic", value=TOPIC)
-                goal = gr.Textbox(label="Video Goal", value=GOAL)
-                llm = gr.Dropdown(["G4F", "Gemini"], label="Language Model", value=LLM)
-
-        # Second column
-        with gr.Column(scale=1, min_width=300):
-            with gr.Box():
-                gr.Markdown("### Text Settings")
-                with gr.Row():
-                    font_color = gr.ColorPicker(label="Font Color", value=FONT_COLOR)
-                    font_size = gr.Number(label="Font Size", value=FONT_SIZE)
-                font_name = gr.Dropdown(["Nimbus-Sans-Bold", "Arial", "Helvetica", "Times New Roman"], label="Font Name", value=FONT_NAME)
-                text_position = gr.Dropdown(["center", "top", "bottom"], label="Text Position", value=POSITION)
-                elevenlabs_voice = gr.Dropdown(AVAILABLE_VOICES, label="ElevenLabs Voice", value=ELEVENLABS_VOICE)
-                xtts_voice = gr.Dropdown(XTTS_VOICES, label="XTTS Voice", value=XTTS_VOICE, visible=False)
-
-        # Third column
-        with gr.Column(scale=1, min_width=300):
-            with gr.Box():
-                gr.Markdown("### Video Settings")
-                image_gen = gr.Dropdown(["Hercai", "Segmind"], label="Image Generation Model", value=IMAGE_GEN)
-                hercai_model = gr.Dropdown(["v1", "v2", "v3", "lexica", "prodia"], label="Hercai Model", value=HERCAI_MODEL, visible=False)
-                video_dimensions = gr.Dropdown(["1080x1920", "1920x1080"], label="Video Dimensions", value=VIDEO_DIMENSIONS)
-
-            video_output = gr.Video(label="Generated Video", format='mp4')
+        video_output = gr.Video(label="Generated Video", format='mp4')
 
     with gr.Row():
         generate_btn = gr.Button("Generate", variant="primary")
@@ -330,7 +332,6 @@ with gr.Blocks(theme=gr.themes.Base()) as demo:
         return gr.update(visible=tts_engine == "XTTS_V2"), gr.update(visible=tts_engine == "ElevenLabs")
 
     image_gen.change(fn=update_hercai_visibility, inputs=[image_gen], outputs=[hercai_model])
-    tts_engine = gr.Dropdown(["ElevenLabs", "XTTS_V2"], label="TTS Engine", value=TTS_ENGINE)
     tts_engine.change(fn=update_voice_visibility, inputs=[tts_engine], outputs=[xtts_voice, elevenlabs_voice])
 
     generate_btn.click(
