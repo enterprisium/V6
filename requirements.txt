@@ -1,0 +1,9 @@
+gradio==3.41.2
+g4f[all]
+elevenlabs
+ffmpeg-python==0.2.0
+faster-whisper==0.7.0
+git+https://github.com/Zulko/moviepy.git@bc8d1a831d2d1f61abfdf1779e8df95d523947a5
+imageio==2.25.1
+hercai
+google_generativeai
