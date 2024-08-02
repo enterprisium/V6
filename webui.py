@@ -1,24 +1,19 @@
 import os
 import io
-import g4f
-import cv2
 import json
 import uuid
 import random
-import ffmpeg
 import requests
 import numpy as np
 import gradio as gr
 from PIL import Image
-from hercai import Hercai
 from pprint import pprint
 from elevenlabs import play
 from g4f.client import Client
 import google.generativeai as genai
 from faster_whisper import WhisperModel
 from elevenlabs.client import ElevenLabs
-from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
-from moviepy.editor import AudioFileClip, concatenate_audioclips, concatenate_videoclips, ImageClip
+from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip, AudioFileClip, concatenate_videoclips, ImageClip
 
 # Define default values
 TOPIC = "Success and Achievement"
@@ -38,6 +33,11 @@ segmind_apikey = ""
 elevenlabs_apikey = ""
 gemini_apikey = ""
 
+# Available ElevenLabs voices
+AVAILABLE_VOICES = ["Adam", "Antoni", "Arnold", "Bella", "Domi", "Elli", "Josh", "Rachel", "Sam"]
+
+# Available languages
+AVAILABLE_LANGUAGES = ["English", "Spanish", "French", "German", "Italian", "Portuguese", "Russian", "Chinese", "Japanese", "Korean"]
 
 def fetch_imagedescription_and_script(prompt, llm):
     if llm == "G4F":
@@ -46,15 +46,22 @@ def fetch_imagedescription_and_script(prompt, llm):
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}]
         )
-        output = json.loads(response.choices[0].message.content.strip())
-
+        response_text = response.choices[0].message.content.strip()
     elif llm == "Gemini":
         genai.configure(api_key=gemini_apikey)
         model = genai.GenerativeModel('gemini-pro')
         response = model.generate_content(prompt)
-        output = json.loads(response.text)
+        response_text = response.text
     else:
         raise ValueError("Invalid LLM selected")
+
+    # Extract JSON from the response
+    json_match = re.search(r'\[[\s\S]*\]', response_text)
+    if json_match:
+        json_str = json_match.group(0)
+        output = json.loads(json_str)
+    else:
+        raise ValueError("No valid JSON found in the response")
 
     pprint(output)
     image_prompts = [k['image_description'] for k in output]
@@ -68,7 +75,7 @@ def generate_images(prompts, active_folder, image_gen, hercai_model=None):
     if image_gen == "Hercai":
         herc = Hercai("")
         for i, prompt in enumerate(prompts):
-            final_prompt = "((perfect quality)), ((cinematic photo:1.3)), ((raw candid)), 4k, {}, no occlusion, Fujifilm XT3, highly detailed, bokeh, cinemascope".format(prompt.strip('.'))
+            final_prompt = f"((perfect quality)), ((cinematic photo:1.3)), ((raw candid)), 4k, {prompt.strip('.')}, no occlusion, Fujifilm XT3, highly detailed, bokeh, cinemascope"
             try:
                 image_result = herc.draw_image(
                     model=hercai_model,
@@ -91,15 +98,12 @@ def generate_images(prompts, active_folder, image_gen, hercai_model=None):
         url = "https://api.segmind.com/v1/sdxl1.0-txt2img"
         headers = {'x-api-key': segmind_apikey}
 
-        if not os.path.exists(active_folder):
-            os.makedirs(active_folder)
-
         num_images = len(prompts)
         currentseed = random.randint(1, 1000000)
         print("seed ", currentseed)
 
         for i, prompt in enumerate(prompts):
-            final_prompt = "((perfect quality)), ((cinematic photo:1.3)), ((raw candid)), 4k, {}, no occlusion, Fujifilm XT3, highly detailed, bokeh, cinemascope".format(prompt.strip('.'))
+            final_prompt = f"((perfect quality)), ((cinematic photo:1.3)), ((raw candid)), 4k, {prompt.strip('.')}, no occlusion, Fujifilm XT3, highly detailed, bokeh, cinemascope"
             data = {
                 "prompt": final_prompt,
                 "negative_prompt": "((deformed)), ((limbs cut off)), ((quotes)), ((extra fingers)), ((deformed hands)), extra limbs, disfigured, blurry, bad anatomy, absent limbs, blurred, watermark, disproportionate, grainy, signature, cut off, missing legs, missing arms, poorly drawn face, bad face, fused face, cloned face, worst face, three crus, extra crus, fused crus, worst feet, three feet, fused feet, fused thigh, three thigh, fused thigh, extra thigh, worst thigh, missing fingers, extra fingers, ugly fingers, long fingers, horn, extra eyes, amputation, disconnected limbs",
@@ -130,25 +134,61 @@ def generate_images(prompts, active_folder, image_gen, hercai_model=None):
 
 def generate_and_save_audio(text, active_folder, output_filename, elevenlabs_apikey, voice_name):
     client = ElevenLabs(api_key=elevenlabs_apikey)
-    audio = client.generate(text=text, voice=voice_name)
+    audio_generator = client.generate(text=text, voice=voice_name)
+    audio_content = b"".join(audio_generator)  # Convert generator to bytes
     output_path = os.path.join(active_folder, f"{output_filename}.mp3")
-    play(audio)
+    play(audio_content)
     with open(output_path, "wb") as f:
-        f.write(audio)
+        f.write(audio_content)
     print(f"Audio saved as '{output_path}'")
 
 def create_combined_video_audio(active_folder, output_filename):
-    images = read_images_from_folder(active_folder)
-    for i, text in enumerate(texts):
-        output_filename = str(i + 1)
-        print(output_filename)
-        generate_and_save_audio(text, active_folder, output_filename, voice_id, elevenlabsapi)
+    image_files = sorted([f for f in os.listdir(active_folder) if f.endswith('.jpg')])
+    audio_files = sorted([f for f in os.listdir(active_folder) if f.endswith('.mp3')])
+    
+    clips = []
+    for img, aud in zip(image_files, audio_files):
+        img_path = os.path.join(active_folder, img)
+        aud_path = os.path.join(active_folder, aud)
+        
+        image_clip = ImageClip(img_path).set_duration(AudioFileClip(aud_path).duration)
+        audio_clip = AudioFileClip(aud_path)
+        video_clip = image_clip.set_audio(audio_clip)
+        clips.append(video_clip)
+    
+    final_clip = concatenate_videoclips(clips)
+    output_path = os.path.join(active_folder, output_filename)
+    final_clip.write_videofile(output_path, codec="libx264", audio_codec="aac")
+    return output_path
 
-    output_filename = "combined_video.mp4"
-    create_combined_video_audio(active_folder, output_filename)
-    output_video_file = os.path.join(active_folder, output_filename)
+def extract_audio_from_video(outvideo):
+    if outvideo is None:
+        raise ValueError("Input video is None")
+    audiofilename = outvideo.replace(".mp4", '.mp3')
+    input_stream = ffmpeg.input(outvideo)
+    audio = input_stream.audio
+    output_stream = ffmpeg.output(audio, audiofilename)
+    output_stream = ffmpeg.overwrite_output(output_stream)
+    ffmpeg.run(output_stream)
+    return audiofilename
 
-    return output_video_file
+def generate_text_clip(word, start, end, video, font_color, font_size, font_name, text_position):
+    txt_clip = (TextClip(word, fontsize=font_size, color=font_color, font=font_name, stroke_width=3, stroke_color='black')
+                .set_position(text_position)
+                .set_duration(end - start))
+    return txt_clip.set_start(start)
+
+def get_word_level_timestamps(model, audioname):
+    segments, info = model.transcribe(audioname, word_timestamps=True)
+    segments = list(segments)
+    wordlevel_info = []
+    for segment in segments:
+        for word in segment.words:
+            wordlevel_info.append({'word': word.word, 'start': word.start, 'end': word.end})
+    return wordlevel_info
+
+model_size = "base"
+model = WhisperModel(model_size)
 
 def add_captions_to_video(videofilename, wordlevelcaptions, font_color, font_size, font_name, text_position):
     video = VideoFileClip(videofilename)
@@ -158,16 +198,6 @@ def add_captions_to_video(videofilename, wordlevelcaptions, font_color, font_siz
     finalvideoname = os.path.join(path, "final.mp4")
     final_video.write_videofile(finalvideoname, codec="libx264", audio_codec="aac")
     return finalvideoname
-
-def add_captions(inputvideo):
-    print(inputvideo)
-    audiofilename = extract_audio_from_video(inputvideo)
-    print(audiofilename)
-    wordlevelinfo = get_word_level_timestamps(model, audiofilename)
-    print(wordlevelinfo)
-    finalvidpath = add_captions_to_video(inputvideo, wordlevelinfo, FONT_COLOR, FONT_SIZE, FONT_NAME, POSITION)
-    print(finalvidpath)
-    return finalvidpath
 
 def create_video_with_params(topic, goal, llm, image_gen, hercai_model, video_dimensions, font_color, font_size, font_name, text_position, elevenlabs_voice):
     prompt_prefix = f"""You are tasked with creating a script for a {topic} video that is about 30 seconds.
@@ -191,22 +221,30 @@ Please follow these instructions to create an engaging and impactful video:
     Output:"""
 
     prompt = prompt_prefix + sample_output + prompt_postinstruction
-    image_prompts, texts = handle_errors(fetch_imagedescription_and_script, prompt, llm)
+    image_prompts, texts = fetch_imagedescription_and_script(prompt, llm)
 
     current_uuid = uuid.uuid4()
     active_folder = str(current_uuid)
 
-    handle_errors(generate_images, image_prompts, active_folder, image_gen, hercai_model)
+    generate_images(image_prompts, active_folder, image_gen, hercai_model)
 
     for i, text in enumerate(texts):
         output_filename = str(i + 1)
-        handle_errors(generate_and_save_audio, text, active_folder, output_filename, elevenlabs_apikey, elevenlabs_voice)
+        generate_and_save_audio(text, active_folder, output_filename, elevenlabs_apikey, elevenlabs_voice)
 
     output_filename = "combined_video.mp4"
-    handle_errors(create_combined_video_audio, active_folder, output_filename)
+    output_video_file = create_combined_video_audio(active_folder, output_filename)
 
-    output_video_file = os.path.join(active_folder, output_filename)
-    return output_video_file
+    # Extract audio from the combined video
+    audiofilename = extract_audio_from_video(output_video_file)
+
+    # Generate word-level timestamps using Faster Whisper
+    wordlevelinfo = get_word_level_timestamps(model, audiofilename)
+
+    # Add captions to the video
+    final_video_path = add_captions_to_video(output_video_file, wordlevelinfo, font_color, font_size, font_name, text_position)
+
+    return final_video_path
 
 def reset_values():
     return TOPIC, GOAL, LLM, IMAGE_GEN, HERCAI_MODEL, VIDEO_DIMENSIONS, FONT_COLOR, FONT_SIZE, FONT_NAME, POSITION, ELEVENLABS_VOICE
@@ -218,66 +256,74 @@ def save_api_keys(segmind_key, elevenlabs_key, gemini_key):
     gemini_apikey = gemini_key
     return "API keys saved successfully!"
 
+# Gradio UI
 with gr.Blocks(theme=gr.themes.Base()) as demo:
-    gr.Markdown("# Generate Short-form Videos for YouTube Shorts or Instagram Reels")
+    gr.Markdown("# SocialGPT - Generate Short-form Videos")
 
-    with gr.Tab("Video Generation"):
+    with gr.Accordion("API Keys", open=False):
         with gr.Row():
-            topic = gr.Textbox(label="Topic", placeholder="Enter the video topic", value=TOPIC)
-            goal = gr.Textbox(label="Goal", placeholder="Enter the video goal", value=GOAL)
-
+            segmind_key_input = gr.Textbox(label="Segmind API Key", type="password")
+            elevenlabs_key_input = gr.Textbox(label="ElevenLabs API Key", type="password")
+            gemini_key_input = gr.Textbox(label="Gemini API Key", type="password")
         with gr.Row():
-            llm = gr.Dropdown(["G4F", "Gemini"], label="Language Model", value=LLM)
-            image_gen = gr.Dropdown(["Hercai", "Segmind"], label="Image Generation Model", value=IMAGE_GEN)
-            hercai_model = gr.Dropdown(["v1", "v2", "v3", "lexica", "prodia"], label="Hercai Model", value=HERCAI_MODEL, visible=False)
+            save_keys_btn = gr.Button("Save API Keys")
+            status_output = gr.Textbox(label="Status", interactive=False)
 
-        with gr.Row():
-            video_dimensions = gr.Dropdown(["1080x1920", "1920x1080"], label="Video Dimensions", value=VIDEO_DIMENSIONS)
-            font_color = gr.ColorPicker(label="Font Color", value=FONT_COLOR)
-            font_size = gr.Slider(minimum=20, maximum=120, step=1, label="Font Size", value=FONT_SIZE)
+    with gr.Row():
+        # First column
+        with gr.Column(scale=1, min_width=300):
+            with gr.Box():
+                gr.Markdown("### Script Settings")
+                topic = gr.Textbox(label="Video Topic", value=TOPIC)
+                goal = gr.Textbox(label="Video Goal", value=GOAL)
+                llm = gr.Dropdown(["G4F", "Gemini"], label="Language Model", value=LLM)
 
-        with gr.Row():
-            font_name = gr.Dropdown(["Nimbus-Sans-Bold", "Arial", "Helvetica", "Times New Roman"], label="Font Name", value=FONT_NAME)
-            text_position = gr.Dropdown(["center", "top", "bottom"], label="Text Position", value=POSITION)
-            elevenlabs_voice = gr.Dropdown(choices=["Sarah", "Laura", "Charlie", "George", "Callum", "Liam", "Charlotte", "Alice", "Matilda", "Will", "Jessica", "Eric", "Chris", "Brian", "Daniel", "Lily", "Bill"], label="ElevenLabs Voice", value=ELEVENLABS_VOICE)
+        # Second column
+        with gr.Column(scale=1, min_width=300):
+            with gr.Box():
+                gr.Markdown("### Text Settings")
+                with gr.Row():
+                    font_color = gr.ColorPicker(label="Font Color", value=FONT_COLOR)
+                    font_size = gr.Number(label="Font Size", value=FONT_SIZE)
+                font_name = gr.Dropdown(["Nimbus-Sans-Bold", "Arial", "Helvetica", "Times New Roman"], label="Font Name", value=FONT_NAME)
+                text_position = gr.Dropdown(["center", "top", "bottom"], label="Text Position", value=POSITION)
+                elevenlabs_voice = gr.Dropdown(AVAILABLE_VOICES, label="ElevenLabs Voice", value=ELEVENLABS_VOICE)
 
-        with gr.Row():
-            btn_create_video = gr.Button('Generate Video')
-            btn_reset = gr.Button('Reset to Default')
+        # Third column
+        with gr.Column(scale=1, min_width=300):
+            with gr.Box():
+                gr.Markdown("### Video Settings")
+                image_gen = gr.Dropdown(["Hercai", "Segmind"], label="Image Generation Model", value=IMAGE_GEN)
+                hercai_model = gr.Dropdown(["v1", "v2", "v3", "lexica", "prodia"], label="Hercai Model", value=HERCAI_MODEL, visible=False)
+                video_dimensions = gr.Dropdown(["1080x1920", "1920x1080"], label="Video Dimensions", value=VIDEO_DIMENSIONS)
 
-        with gr.Row():
-            video = gr.Video(label="Generated Video", format='mp4', height=720, width=405)
-            btn_add_captions = gr.Button('Add Captions')
-            final_video = gr.Video(label="Video with Captions", format='mp4', height=720, width=405)
+            video_output = gr.Video(label="Generated Video", format='mp4')
 
-    with gr.Tab("API Keys"):
-        segmind_key_input = gr.Textbox(label="Segmind API Key", type="password")
-        elevenlabs_key_input = gr.Textbox(label="ElevenLabs API Key", type="password")
-        gemini_key_input = gr.Textbox(label="Gemini API Key", type="password")
-        save_keys_btn = gr.Button("Save API Keys")
-        api_status = gr.Textbox(label="Status", interactive=False)
+    with gr.Row():
+        generate_btn = gr.Button("Generate", variant="primary")
+        reset_btn = gr.Button("Reset")
 
     def update_hercai_visibility(choice):
         return gr.update(visible=choice == "Hercai")
 
     image_gen.change(fn=update_hercai_visibility, inputs=[image_gen], outputs=[hercai_model])
 
-    btn_create_video.click(
+    generate_btn.click(
         fn=create_video_with_params,
         inputs=[topic, goal, llm, image_gen, hercai_model, video_dimensions, font_color, font_size, font_name, text_position, elevenlabs_voice],
-        outputs=[video]
+        outputs=[video_output]
     )
 
-    btn_reset.click(
+    reset_btn.click(
         fn=reset_values,
         inputs=[],
         outputs=[topic, goal, llm, image_gen, hercai_model, video_dimensions, font_color, font_size, font_name, text_position, elevenlabs_voice]
     )
 
-    btn_add_captions.click(
-        fn=add_captions,
-        inputs=[video],
-        outputs=[final_video]
+    save_keys_btn.click(
+        fn=save_api_keys,
+        inputs=[segmind_key_input, elevenlabs_key_input, gemini_key_input],
+        outputs=[status_output]
     )
 
-demo.queue().launch(debug=True)
+demo.launch(debug=True, enable_queue=True)
